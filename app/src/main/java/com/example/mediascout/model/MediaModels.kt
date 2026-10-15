@@ -23,6 +23,7 @@ enum class FormatKind {
 
 data class PlaylistEntry(
     val title: String,
+    val url: String?,
     val durationSeconds: Long?,
     val formats: List<MediaFormat>
 )
