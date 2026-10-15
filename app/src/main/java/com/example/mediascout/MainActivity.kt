@@ -1,8 +1,10 @@
 package com.example.mediascout
 
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,16 +14,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -35,6 +36,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
@@ -69,6 +71,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private data class ActiveDownload(
+    val key: String,
+    val label: String,
+    val percent: Float,
+    val etaSeconds: Long
+)
+
 @Composable
 private fun MediaScoutScreen(
     arabic: Boolean,
@@ -76,11 +85,44 @@ private fun MediaScoutScreen(
     repository: YtDlpMediaRepository
 ) {
     var url by remember { mutableStateOf("") }
+    var inspectedUrl by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var media by remember { mutableStateOf<MediaInfo?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var active by remember { mutableStateOf<ActiveDownload?>(null) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val t: (String, String) -> String = { ar, en -> if (arabic) ar else en }
+
+    val startDownload: (String, String, String, String, String) -> Unit =
+        { key, label, sourceUrl, selector, fileBase ->
+            if (active == null) {
+                error = null
+                active = ActiveDownload(key, label, 0f, 0L)
+                scope.launch {
+                    try {
+                        val saved = repository.download(sourceUrl, selector, fileBase) { percent, eta ->
+                            active = ActiveDownload(key, label, percent, eta)
+                        }
+                        Toast.makeText(
+                            context,
+                            t("تم الحفظ في: ", "Saved to: ") + saved,
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } catch (e: Exception) {
+                        val message = e.message ?: t("حدث خطأ غير معروف", "An unknown error occurred")
+                        error = message
+                        Toast.makeText(
+                            context,
+                            t("فشل التنزيل: ", "Download failed: ") + message,
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } finally {
+                        active = null
+                    }
+                }
+            }
+        }
 
     Column(
         modifier = Modifier
@@ -96,7 +138,7 @@ private fun MediaScoutScreen(
         ) {
             Column {
                 Text("MediaScout", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text(t("فحص معلومات الوسائط والصيغ", "Inspect media information and formats"),
+                Text(t("فحص وتنزيل الوسائط", "Inspect and download media"),
                     style = MaterialTheme.typography.bodyMedium)
             }
             TextButton(onClick = { onLanguageChange(!arabic) }) {
@@ -118,9 +160,10 @@ private fun MediaScoutScreen(
                 media = null
                 error = null
                 loading = true
+                inspectedUrl = url.trim()
                 scope.launch {
                     try {
-                        media = repository.inspect(url.trim())
+                        media = repository.inspect(inspectedUrl)
                     } catch (e: Exception) {
                         error = e.message ?: t("حدث خطأ غير معروف", "An unknown error occurred")
                     } finally {
@@ -128,7 +171,7 @@ private fun MediaScoutScreen(
                     }
                 }
             },
-            enabled = !loading && url.isNotBlank(),
+            enabled = !loading && active == null && url.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
         ) {
             if (loading) {
@@ -143,8 +186,8 @@ private fun MediaScoutScreen(
 
         Text(
             t(
-                "استخدم روابط لمحتوى تملك حق الوصول إليه وتنزيله. هذه المرحلة تعرض المعلومات فقط ولا تبدأ تنزيل الملفات.",
-                "Use URLs for content you are allowed to access and download. This phase only inspects metadata; it does not download files."
+                "استخدم روابط لمحتوى تملك حق الوصول إليه وتنزيله. اضغط على أي صيغة لتنزيلها، وأبقِ التطبيق مفتوحًا أثناء التنزيل. الملفات تُحفظ في Download/MediaScout.",
+                "Use URLs for content you are allowed to access and download. Tap a format to download it and keep the app open while downloading. Files are saved to Download/MediaScout."
             ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -153,7 +196,7 @@ private fun MediaScoutScreen(
         error?.let {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "${t("تعذّر الفحص", "Inspection failed")}: $it",
+                    text = "${t("حدث خطأ", "Error")}: $it",
                     modifier = Modifier.padding(12.dp),
                     color = MaterialTheme.colorScheme.error
                 )
@@ -162,6 +205,30 @@ private fun MediaScoutScreen(
 
         media?.let { result ->
             MediaSummary(result, arabic)
+
+            if (!result.isPlaylist) {
+                QuickDownloadButtons(
+                    arabic = arabic,
+                    enabled = active == null,
+                    onBest = {
+                        startDownload(
+                            "single-best", t("أفضل فيديو", "Best video"),
+                            inspectedUrl, "best", "${result.title} (best)"
+                        )
+                    },
+                    onAudio = {
+                        startDownload(
+                            "single-audio", t("أفضل صوت", "Best audio"),
+                            inspectedUrl, "bestaudio", "${result.title} (audio)"
+                        )
+                    }
+                )
+                val current = active
+                if (current != null && current.key.startsWith("single-")) {
+                    DownloadProgress(current, arabic)
+                }
+            }
+
             if (result.isPlaylist) {
                 SectionTitle(t("عناصر قائمة التشغيل", "Playlist entries"))
                 Text(
@@ -171,11 +238,34 @@ private fun MediaScoutScreen(
                 )
                 result.entries.forEachIndexed { index, entry ->
                     Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp)) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text("${index + 1}. ${entry.title}", fontWeight = FontWeight.SemiBold)
                             Text(formatDuration(entry.durationSeconds, arabic))
                             if (entry.formats.isNotEmpty()) {
                                 Text(t("${entry.formats.size} صيغة", "${entry.formats.size} formats"))
+                            }
+                            val entryUrl = entry.url
+                            if (entryUrl != null) {
+                                QuickDownloadButtons(
+                                    arabic = arabic,
+                                    enabled = active == null,
+                                    onBest = {
+                                        startDownload(
+                                            "entry-$index-best", t("أفضل فيديو", "Best video"),
+                                            entryUrl, "best", "${entry.title} (best)"
+                                        )
+                                    },
+                                    onAudio = {
+                                        startDownload(
+                                            "entry-$index-audio", t("أفضل صوت", "Best audio"),
+                                            entryUrl, "bestaudio", "${entry.title} (audio)"
+                                        )
+                                    }
+                                )
+                                val current = active
+                                if (current != null && current.key.startsWith("entry-$index-")) {
+                                    DownloadProgress(current, arabic)
+                                }
                             }
                         }
                     }
@@ -186,28 +276,86 @@ private fun MediaScoutScreen(
             val combined = result.formats.filter { it.kind == FormatKind.VIDEO_AND_AUDIO }
             val videoOnly = result.formats.filter { it.kind == FormatKind.VIDEO_ONLY }
 
+            val onDownloadFormat: (MediaFormat) -> Unit = { format ->
+                val label = format.height?.let { "${it}p" } ?: format.description
+                startDownload(format.id, label, inspectedUrl, format.id, "${result.title} [${format.id}]")
+            }
+
             FormatSection(
                 title = t("1. الصوت فقط", "1. Audio only"),
                 emptyText = t("لم تُرجع البيانات صيغًا صوتية منفصلة.", "No separate audio-only formats were returned."),
                 formats = audio,
-                arabic = arabic
+                arabic = arabic,
+                active = active,
+                onDownload = onDownloadFormat
             )
             FormatSection(
                 title = t("2. فيديو مع صوت", "2. Video with audio"),
                 emptyText = t("لم تُرجع البيانات صيغًا تحتوي على الفيديو والصوت معًا.", "No combined video-and-audio formats were returned."),
                 formats = combined,
-                arabic = arabic
+                arabic = arabic,
+                active = active,
+                onDownload = onDownloadFormat
             )
             if (videoOnly.isNotEmpty()) {
                 FormatSection(
-                    title = t("فيديو فقط (يحتاج غالبًا إلى مسار صوت منفصل)", "Video only (usually needs a separate audio stream)"),
+                    title = t("فيديو فقط (بدون صوت)", "Video only (no audio)"),
                     emptyText = "",
                     formats = videoOnly,
-                    arabic = arabic
+                    arabic = arabic,
+                    active = active,
+                    onDownload = onDownloadFormat
                 )
             }
         }
         Spacer(Modifier.height(12.dp))
+    }
+}
+
+@Composable
+private fun QuickDownloadButtons(
+    arabic: Boolean,
+    enabled: Boolean,
+    onBest: () -> Unit,
+    onAudio: () -> Unit
+) {
+    val t: (String, String) -> String = { ar, en -> if (arabic) ar else en }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Button(onClick = onBest, enabled = enabled, modifier = Modifier.weight(1f)) {
+            Text(t("أفضل فيديو (بصوت)", "Best video"))
+        }
+        OutlinedButton(onClick = onAudio, enabled = enabled, modifier = Modifier.weight(1f)) {
+            Text(t("أفضل صوت", "Best audio"))
+        }
+    }
+}
+
+@Composable
+private fun DownloadProgress(download: ActiveDownload, arabic: Boolean) {
+    val t: (String, String) -> String = { ar, en -> if (arabic) ar else en }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (download.percent > 0f) {
+            LinearProgressIndicator(
+                progress = { (download.percent / 100f).coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        val eta = if (download.etaSeconds > 0) {
+            " • " + t("المتبقي ", "ETA ") + formatDuration(download.etaSeconds, arabic)
+        } else {
+            ""
+        }
+        val text = if (download.percent > 0f) {
+            "%.0f%%".format(Locale.ROOT, download.percent) + eta
+        } else {
+            t("جارٍ التنزيل…", "Downloading…")
+        }
+        Text("${download.label}: $text", style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -235,7 +383,9 @@ private fun FormatSection(
     title: String,
     emptyText: String,
     formats: List<MediaFormat>,
-    arabic: Boolean
+    arabic: Boolean,
+    active: ActiveDownload?,
+    onDownload: (MediaFormat) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SectionTitle(title)
@@ -245,7 +395,9 @@ private fun FormatSection(
             formats.sortedWith(
                 compareByDescending<MediaFormat> { it.height ?: -1 }
                     .thenByDescending { it.bitrateKbps ?: -1.0 }
-            ).forEach { FormatRow(it, arabic) }
+            ).forEach { format ->
+                FormatRow(format, arabic, active) { onDownload(format) }
+            }
         }
     }
 }
@@ -257,9 +409,19 @@ private fun SectionTitle(title: String) {
 }
 
 @Composable
-private fun FormatRow(format: MediaFormat, arabic: Boolean) {
+private fun FormatRow(
+    format: MediaFormat,
+    arabic: Boolean,
+    active: ActiveDownload?,
+    onDownload: () -> Unit
+) {
     val t: (String, String) -> String = { ar, en -> if (arabic) ar else en }
-    Card(modifier = Modifier.fillMaxWidth()) {
+    val isActive = active != null && active.key == format.id
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = active == null) { onDownload() }
+    ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -291,6 +453,22 @@ private fun FormatRow(format: MediaFormat, arabic: Boolean) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            if (format.kind == FormatKind.VIDEO_ONLY) {
+                Text(
+                    t("بدون صوت (لا يمكن دمجه هنا)", "No audio (cannot be merged here)"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            if (isActive && active != null) {
+                DownloadProgress(active, arabic)
+            } else {
+                Text(
+                    t("اضغط للتنزيل", "Tap to download"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
         }
     }
 }
@@ -300,11 +478,7 @@ private fun formatSize(bytes: Long?, approximate: Boolean, arabic: Boolean): Str
     val mib = bytes / (1024.0 * 1024.0)
     val value = if (mib >= 1024) "%.2f GiB".format(Locale.ROOT, mib / 1024.0)
         else "%.1f MiB".format(Locale.ROOT, mib)
-    return when {
-        approximate && arabic -> "≈ $value"
-        approximate -> "≈ $value"
-        else -> value
-    }
+    return if (approximate) "≈ $value" else value
 }
 
 private fun formatDuration(seconds: Long?, arabic: Boolean): String {
