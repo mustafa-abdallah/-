@@ -45,6 +45,8 @@ object MediaInfoParser {
                 PlaylistEntry(
                     title = item.optString("title").takeUnless { it.isBlank() || it == "null" }
                         ?: "Video ${i + 1}",
+                    url = item.optString("webpage_url").cleanNullable()
+                        ?: item.optString("url").cleanNullable(),
                     durationSeconds = item.optNullableLong("duration"),
                     formats = item.optJSONArray("formats")?.toFormats().orEmpty()
                 )
