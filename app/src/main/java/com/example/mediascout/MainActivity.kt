@@ -78,6 +78,15 @@ private data class ActiveDownload(
     val etaSeconds: Long
 )
 
+private const val BEST_VIDEO = "best/bestaudio"
+private const val BEST_AUDIO = "bestaudio/best"
+
+private fun fallbackFor(kind: FormatKind): String = when (kind) {
+    FormatKind.AUDIO_ONLY -> BEST_AUDIO
+    FormatKind.VIDEO_ONLY -> "bestvideo/best"
+    else -> BEST_VIDEO
+}
+
 @Composable
 private fun MediaScoutScreen(
     arabic: Boolean,
@@ -94,14 +103,16 @@ private fun MediaScoutScreen(
     val context = LocalContext.current
     val t: (String, String) -> String = { ar, en -> if (arabic) ar else en }
 
-    val startDownload: (String, String, String, String, String) -> Unit =
-        { key, label, sourceUrl, selector, fileBase ->
+    val startDownload: (String, String, String, String, String, String) -> Unit =
+        { key, label, sourceUrl, selector, fallback, fileBase ->
             if (active == null) {
                 error = null
                 active = ActiveDownload(key, label, 0f, 0L)
                 scope.launch {
                     try {
-                        val saved = repository.download(sourceUrl, selector, fileBase) { percent, eta ->
+                        val saved = repository.download(
+                            sourceUrl, selector, fallback, fileBase
+                        ) { percent, eta ->
                             active = ActiveDownload(key, label, percent, eta)
                         }
                         Toast.makeText(
@@ -213,13 +224,13 @@ private fun MediaScoutScreen(
                     onBest = {
                         startDownload(
                             "single-best", t("أفضل فيديو", "Best video"),
-                            inspectedUrl, "best", "${result.title} (best)"
+                            inspectedUrl, BEST_VIDEO, BEST_VIDEO, result.title
                         )
                     },
                     onAudio = {
                         startDownload(
                             "single-audio", t("أفضل صوت", "Best audio"),
-                            inspectedUrl, "bestaudio", "${result.title} (audio)"
+                            inspectedUrl, BEST_AUDIO, BEST_AUDIO, result.title
                         )
                     }
                 )
@@ -252,13 +263,13 @@ private fun MediaScoutScreen(
                                     onBest = {
                                         startDownload(
                                             "entry-$index-best", t("أفضل فيديو", "Best video"),
-                                            entryUrl, "best", "${entry.title} (best)"
+                                            entryUrl, BEST_VIDEO, BEST_VIDEO, entry.title
                                         )
                                     },
                                     onAudio = {
                                         startDownload(
                                             "entry-$index-audio", t("أفضل صوت", "Best audio"),
-                                            entryUrl, "bestaudio", "${entry.title} (audio)"
+                                            entryUrl, BEST_AUDIO, BEST_AUDIO, entry.title
                                         )
                                     }
                                 )
@@ -278,7 +289,10 @@ private fun MediaScoutScreen(
 
             val onDownloadFormat: (MediaFormat) -> Unit = { format ->
                 val label = format.height?.let { "${it}p" } ?: format.description
-                startDownload(format.id, label, inspectedUrl, format.id, "${result.title} [${format.id}]")
+                startDownload(
+                    format.id, label, inspectedUrl,
+                    format.id, fallbackFor(format.kind), result.title
+                )
             }
 
             FormatSection(
